@@ -1,0 +1,380 @@
+// 3. Initialisation
+	initialize() { 
+	// If parameters are intended to be varied,
+	// They are given a default values using the defineCfgParam() helper function
+		
+		// 3.1 These parameters are used when running
+		// simulations to determine genetic load.
+				defineCfgParam("GL_RUN", F);
+				// When doing genetic load, always set low density growth and max number of offspring to high values.
+				// You should keep "GL_RUN" to "FALSE" for the starting test.
+				// For some parameters, this means that you will fail to measure genetic load because the population will be eliminated.
+				// For ONLY these parameters sets, you should then rerun the genetic load calculation with "GL_RUN" to "TRUE".
+				
+				defineConstant("BONUS_POP_FACTOR", 1.0);
+				defineConstant("PREV_BONUS_POP_FACTOR", 1.0);
+				defineConstant("PREV_MEASURED_EXPECTED_POP", 1.0);
+
+			// 3.1.6 Ecology and drop parameters:
+				defineCfgParam("CAPACITY", 100);
+				
+				defineCfgParam("DROP", T);
+				defineCfgParam("INTRODUCE_RATIO", 0.75);
+				defineCfgParam("DROP_SIZE", asInteger((INTRODUCE_RATIO/(1-INTRODUCE_RATIO))*CAPACITY/8));
+				defineCfgParam("DROP_M_RATIO", 0.0);				
+				defineCfgParam("DRIVE_CONVERSION_RATE", 0.4);
+	 			defineCfgParam("LATE_GERMLINE_RESISTANCE_CUT_RATE", 0.0);				
+				defineCfgParam("SOMATIC_FITNESS_MULTIPLIER", 1.0);// Anyone carries a drive suffer this. 	 
+    			
+    			defineCfgParam("R1_OCCURRENCE_RATE", 0.0);
+				
+				defineCfgParam("MAX_ATTEMPTS_TO_FIND_SUITABLE_MATE", 20);
+				defineCfgParam("LOW_DENSITY_GROWTH_RATE", 6);
+				defineCfgParam("MAX_OFFSPRING", 100);
+
+			initializeSLiMModelType("nonWF");
+			// This simulation will use a non-Wright-Fisher model.
+
+	 wt = initializeMutationType("m1", 0.5, "f", 0.0);
+    dr = initializeMutationType("m2", 0.5, "f", 0.0);
+    r1 = initializeMutationType("m3", 0.5, "f", 0.0);
+    r2 = initializeMutationType("m4", 0.5, "f", 0.0);
+    // A species mark.
+    m = initializeMutationType("m5", 0.5, "f", 0.0);
+    M = initializeMutationType("m6", 0.5, "f", 0.0);
+	   
+	 variation1 = c(m, M);  
+	 variation2 = c(wt, dr, r1, r2);
+	   
+	 initializeGenomicElementType("g1", variation1, c(1, 1));
+	 initializeGenomicElementType("g2", variation2, c(1, 1, 1, 1));
+	   
+	 initializeGenomicElement(g1, 0, 0);
+	 initializeGenomicElement(g2, 1, 1);
+	   
+	 // These variations overwrite one another.
+	 variation1.mutationStackPolicy = "l";
+	 variation1.mutationStackGroup = 1;
+	 
+	 variation2.mutationStackPolicy = "l";
+	 variation2.mutationStackGroup = 1;
+
+	 // No mutation in this model.
+	 initializeMutationRate(0.0);
+			
+	 // These two sites are linked.
+	 initializeRecombinationRate(0.0);
+
+	 }
+
+// 4. A HELPER FUNCTION FOR CONSTANTS THAT MAY ASLO BE CONFIGURED VIA COMMAND LINE.
+	function (void) defineCfgParam(string$ name, lifs value) {
+		if (!exists(name))
+			defineConstant(name, value);
+		}
+
+//// HELPER FUNCTION FOR FORMING A RESISTANCE ALLELE AT A GIVEN LOCUS.
+function (void)addResistanceAllele(o<Genome>$ genome) {
+    // Resistance alleles form at a specified rate.
+    // m3 is R1 allele, m4 is R2.
+    if(runif(1) < R1_OCCURRENCE_RATE)
+        genome.addNewDrawnMutation(m3, 1);
+    else
+        genome.addNewDrawnMutation(m4, 1);
+}
+
+// 6. FUNCTION FOR CAS9 EFFECTS IN THE GERMLINE.
+	function (void)germline(o<Genome>$ child_chromosome, o<Individual>$ parent, f$ resistance_rate) {
+		
+	dr = parent.countOfMutationsOfType(m2);  
+    	 if (dr == 0)
+    	 	return;
+    	 
+       // Check if chromosome has wild-type allele at this locus.
+       if (!child_chromosome.countOfMutationsOfType(m1))
+         return;
+            
+       if (runif(1) < resistance_rate)
+            addResistanceAllele(child_chromosome);}
+
+// 10. FUNCTION FOR SIMULATING HOMOLOGY DIRECTED REPAIR.
+	function (void)hdr(o<Genome>$ chromosome, o<Individual>$ parent, f$ conversion_rate) {
+	
+	dr = parent.countOfMutationsOfType(m2);  
+    	 if (dr == 0)
+    	 	return;
+    	 
+       // Check if chromosome has wild-type allele at this locus.
+       if (!chromosome.countOfMutationsOfType(m1))
+         return;
+
+       // Apply homing effect.
+       if (runif(1) < conversion_rate)
+         chromosome.addNewDrawnMutation(m2, 1);
+         
+         }
+
+// 12. GENE DRIVE IMPLEMENTATION RULES THAT OCCUR IN EVERY CHILD.
+1: modifyChild() {
+	
+	if(DROP){
+  			// First, homology directed repair allows for homing to occur.
+      	hdr(child.genome1, parent1, DRIVE_CONVERSION_RATE); 
+      	hdr(child.genome2, parent2, DRIVE_CONVERSION_RATE); 
+         // Then resistance alleles form.
+         germline(child.genome1, parent1, LATE_GERMLINE_RESISTANCE_CUT_RATE);
+      	germline(child.genome2, parent2, LATE_GERMLINE_RESISTANCE_CUT_RATE);
+         }
+
+    child.tag = 0;
+    
+    if (child.countOfMutationsOfType(m2)|child.countOfMutationsOfType(m6))
+    	child.tag = 1;
+    
+    return T;
+	}
+
+function (f$)genotypeFitness(o<Individual>$ ind) {
+     
+    return 1.0;
+
+}
+
+// 16. REPRODUCTION RULES FOR EACH FEMALE.
+	reproduction(NULL) {
+	// First, evaluate whether reproduction is suppressed by a population suppression drive,
+	// Then, select a mate based on fitness, then generate offspring.
+
+		if (individual.tag == 1)
+			return;
+				
+	// 16.2 Females choose a random provisional mate,
+	// but make a final mating decision based on the attractiveness of that mate,
+	// as determined by the fitness of the mate.
+	// If a mate is rejected, the female tries again,
+	// up to a maximum number of tries, after which she gives up.
+		attempt_no = 0;
+		while (1) {
+		
+		// 16.2.1 First, select a random potential mate.
+			selected_mate = subpop.sampleIndividuals(1, tag = 1);
+			if (!selected_mate.size())
+				return; // No available mates.
+		// Homozygote male will be unattractive
+			//if (selected_mate.genome1.countOfMutationsOfType(m2) + selected_mate.genome2.countOfMutationsOfType(m2) == 2)		
+				//return;
+
+		// 16.2.2 Determine attractiveness of potential mate.
+				
+			mate_attractiveness = genotypeFitness(selected_mate);
+		
+		// 16.2.3 Determine if this mate is chosen, based on attractiveness.
+			if (runif(1) < mate_attractiveness){
+				break; // Select this mate.
+			}
+			
+				
+		// 16.2.4 After ten candidates fail, female gives up.
+			attempt_no = attempt_no + 1;
+			if (attempt_no == MAX_ATTEMPTS_TO_FIND_SUITABLE_MATE)
+				return;
+		}
+
+		capacity_fitness_scaling = LOW_DENSITY_GROWTH_RATE / (((LOW_DENSITY_GROWTH_RATE - 1) * p1.individualCount / CAPACITY) + 1);
+		
+		p = genotypeFitness(individual) * capacity_fitness_scaling * 2 / MAX_OFFSPRING;
+		
+		num_offspring = rbinom(1, MAX_OFFSPRING, p);
+		
+		if (GL_RUN)
+			num_offspring = asInteger(round(num_offspring / BONUS_POP_FACTOR));
+
+		for (i in seqLen(num_offspring)) 			
+			offspring = subpop.addCrossed(individual, selected_mate);
+		
+	}
+
+// 17. START THE SIMULATION BY ADDING AN INITIAL WILD POPULATION.
+1 early() {
+	// Start with a population of wild type flies.
+	sim.addSubpop("p1", asInteger(CAPACITY/8));
+	male = p1.individuals;
+	male.tag = 1;
+	male.genome1.addNewDrawnMutation(m5, 0);
+   male.genome2.addNewDrawnMutation(m6, 0);
+	sim.addSubpop("p2", asInteger(CAPACITY/2));
+	female = p2.individuals;
+	female.tag = 0;
+	female.genome1.addNewDrawnMutation(m5, 0);
+   female.genome2.addNewDrawnMutation(m5, 0);
+	
+	p1.takeMigrants(female);
+	all = p1.individuals;
+   all.genomes.addNewDrawnMutation(m1, 1);
+	
+	Mm_release = asInteger(DROP_SIZE*DROP_M_RATIO);
+	mm_release = asInteger(DROP_SIZE*(1 - DROP_M_RATIO));	
+	sim.addSubpop("p4", Mm_release);
+   Mm_drop = p4.individuals;
+   Mm_drop.genome1.addNewDrawnMutation(m5, 0);
+   Mm_drop.genome2.addNewDrawnMutation(m6, 0);
+    
+   sim.addSubpop("p5", mm_release);
+   mm_drop = p5.individuals;
+   mm_drop.genomes.addNewDrawnMutation(m5, 0);
+    
+   p4.takeMigrants(mm_drop);
+   drop = p4.individuals;    
+   drop.tag = 1;
+
+   drop.genome1.addNewDrawnMutation(m1, 1);
+   drop.genome2.addNewDrawnMutation(m2, 1);
+	     
+   p1.takeMigrants(drop);
+	
+	}
+
+//// 19. FOR SPECIAL RUNS TO CALC GENETIC LOAD.
+//	late() {
+//		if (GL_RUN) {
+//			all = sim.subpopulations.individuals;
+//			total_males = 0;
+//			fertile_males = 0;
+//			total_females = 0;
+//			fertile_females = 0;
+//			for (ind in all) {
+//				if (ind.sex == "M") {
+//					if (!isInfertile(ind))
+//						fertile_males = fertile_males + 1;
+//					total_males = total_males + 1;
+//				}
+//				else {
+//					if (!isInfertile(ind))
+//						fertile_females = fertile_females + 1;
+//					total_females = total_females + 1;
+//				}
+//			}
+//			if (total_males == 0 | total_females == 0)
+//				new_bonus_pop_factor = 1;
+//			else {
+//				if (X_SHRED_RATE == 0)
+//					new_bonus_pop_factor = (fertile_males / total_males) * (fertile_females / total_females);
+//				else
+//					// Need a different bonus pop factor for drives that bias the sex ratio.
+//					new_bonus_pop_factor = (fertile_males / total_males) * (fertile_females / total_females) * (total_females / (total_females + total_males)) / 0.5;
+//			}
+//		}
+//	}
+
+// 13. AGE BASED SURVIVAL RULES.
+late() {
+	all = sim.subpopulations.individuals;
+	for (ind in all){
+		if (ind.countOfMutationsOfType(m2) > 1)
+		print("ERROR");
+		} 
+	all.fitnessScaling = 0.0;
+		}
+
+//// OUTPUT.
+late() {
+	 
+	 this_gen = sim.cycle;	 
+	 Mosquitos = p1.individuals;
+	 Adult_Mos = Mosquitos;
+	 Num_Adult_Mos = size(Adult_Mos);
+	 Adult_Female_Mos = Adult_Mos[Adult_Mos.tag == 0];
+	 Adult_Male_Mos = Adult_Mos[Adult_Mos.tag == 1];
+	 Num_Adult_Female_Mos = size(Adult_Female_Mos);
+	 Num_Adult_Male_Mos = size(Adult_Male_Mos);
+	 	 
+	 num_wt = 0;
+	 num_dr = 0;
+	 num_r1 = 0;
+	 num_r2 = 0;
+	 num_m = 0;
+	 num_M = 0;
+	 
+	 Rate_wt = 0.0;
+	 Rate_dr = 0.0;
+	 Rate_r1 = 0.0;
+	 Rate_r2 = 0.0;
+	 Rate_m = 0.0;
+	 Rate_M = 0.0;
+	 
+	 num_wt = sum(Adult_Mos.countOfMutationsOfType(m1));
+	 num_dr = sum(Adult_Mos.countOfMutationsOfType(m2));
+	 num_r1 = sum(Adult_Mos.countOfMutationsOfType(m3));
+	 num_r2 = sum(Adult_Mos.countOfMutationsOfType(m4));
+	 num_m = sum(Adult_Mos.countOfMutationsOfType(m5));
+	 num_M = sum(Adult_Mos.countOfMutationsOfType(m6));
+	 
+	 Rate_wt = num_wt / (2 * Num_Adult_Mos);
+	 Rate_dr = num_dr / (2 * Num_Adult_Mos);
+	 Rate_r1 = num_r1 / (2 * Num_Adult_Mos);
+	 Rate_r2 = num_r2 / (2 * Num_Adult_Mos);
+	 Rate_m = num_m / (2 * Num_Adult_Mos);
+	 Rate_M = num_M / (2 * Num_Adult_Mos);
+	 
+	 wtM = sum(Adult_Male_Mos.countOfMutationsOfType(m1) == 2)/Num_Adult_Male_Mos;
+	 rM = sum(Adult_Male_Mos.countOfMutationsOfType(m2) == 1)/Num_Adult_Male_Mos;
+	 
+	 num_wt_m = 0;
+	 num_dr_m = 0;
+	 num_r2_m = 0;
+	 
+	 num_m_m = 0;
+	 num_M_m = 0;
+	 
+	 num_wt_f = 0;
+	 num_dr_f = 0;
+	 num_r2_f = 0;
+	 
+	 num_m_f = 0;
+	 num_M_f = 0;
+	 
+	 num_wt_m = sum(Adult_Male_Mos.countOfMutationsOfType(m1));
+	 num_dr_m = sum(Adult_Male_Mos.countOfMutationsOfType(m2));
+	 num_r2_m = sum(Adult_Male_Mos.countOfMutationsOfType(m4));
+	 
+	 num_m_m = sum(Adult_Male_Mos.countOfMutationsOfType(m5));
+	 num_M_m = sum(Adult_Male_Mos.countOfMutationsOfType(m6));
+	 
+	 num_wt_f = sum(Adult_Female_Mos.countOfMutationsOfType(m1));
+	 num_dr_f = sum(Adult_Female_Mos.countOfMutationsOfType(m2));
+	 num_r2_f = sum(Adult_Female_Mos.countOfMutationsOfType(m4));
+	 
+	 num_m_f = sum(Adult_Female_Mos.countOfMutationsOfType(m5));
+	 num_M_f = sum(Adult_Female_Mos.countOfMutationsOfType(m6));
+	
+	 Rate_wt_m = num_wt_m / (2 * Num_Adult_Male_Mos);
+	 Rate_dr_m = num_dr_m / (2 * Num_Adult_Male_Mos);
+	 Rate_r2_m = num_r2_m / (2 * Num_Adult_Male_Mos);
+	 Rate_m_m = num_m_m / (2 * Num_Adult_Male_Mos);
+	 Rate_M_m = num_M_m / (2 * Num_Adult_Male_Mos);
+	 
+	 Rate_wt_f = num_wt_f / (2 * Num_Adult_Female_Mos);
+	 Rate_dr_f = num_dr_f / (2 * Num_Adult_Female_Mos);
+	 Rate_r2_f = num_r2_f / (2 * Num_Adult_Female_Mos);
+	 Rate_m_f = num_m_f / (2 * Num_Adult_Female_Mos);
+	 Rate_M_f = num_M_f / (2 * Num_Adult_Female_Mos);
+	 
+	 Male_Rate = Num_Adult_Male_Mos/Num_Adult_Mos;	 
+	 	
+	 catn("OUT:: " + this_gen + " " + Num_Adult_Mos + " " + Male_Rate + " " + wtM + " " + rM + " " + Rate_wt_m + " " + Rate_dr_m + " " + Rate_r2_m + " " + Rate_m_m + " " + Rate_M_m + " " + Rate_wt_f + " " + Rate_dr_f + " " + Rate_r2_f + " " + Rate_m_f + " " + Rate_M_f + " " + DRIVE_CONVERSION_RATE + " " + R1_OCCURRENCE_RATE + " " + LATE_GERMLINE_RESISTANCE_CUT_RATE + " " + DROP_M_RATIO);
+
+	 
+	 if(Num_Adult_Female_Mos == 0 | p1.individualCount == 0){
+	 
+	 catn("SUPPRESSED:: " + this_gen + " " + Rate_wt + " " + Rate_dr + " " + Rate_r1 + " " + Rate_r2 + " " + Rate_m + " " + Rate_M + " "  + DRIVE_CONVERSION_RATE + " " + R1_OCCURRENCE_RATE + " " + LATE_GERMLINE_RESISTANCE_CUT_RATE + " " + DROP_M_RATIO);
+	 
+	 sim.simulationFinished();}
+
+}
+
+// 21. PROGRAM END.
+30 late() {
+	catn("NOT:: "); 		
+	   sim.simulationFinished();
+	}
+	
